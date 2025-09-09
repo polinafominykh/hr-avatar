@@ -1,0 +1,554 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>HR-Avatar — MVP</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 24px; }
+  h1 { margin: 0 0 16px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .card { border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+  textarea, input[type="text"] { width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  button { padding: 10px 14px; border: 0; border-radius: 10px; background:#111827; color:#fff; cursor:pointer; }
+  button.secondary { background:#6b7280; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eee; }
+  #transcript { border:1px solid #ddd; border-radius: 8px; padding:10px; min-height:120px; background:#fafafa; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:#eef2ff; color:#3730a3; margin-right:6px; margin-bottom:6px; font-size:12px; }
+  .muted { color:#6b7280; font-size: 12px; }
+  .link { color:#2563eb; text-decoration: underline; cursor:pointer; }
+</style>
+
+<h1>HR-Avatar — сквозной MVP</h1>
+<div class="muted">Бэкенд: <code>http://127.0.0.1:8001</code> · WS: <code>ws://127.0.0.1:8001/audio</code> · <span class="link" onclick="window.open('/ws_tester','_blank')">открыть сырой WS-тестер</span></div>
+<br/>
+
+<!-- Ряд 1: Вакансия -->
+<div class="row">
+  <div class="card">
+    <h2>1) Вакансия</h2>
+    <p class="muted">
+      Введи веса навыков (в долях, сумма ≈ 1.0) и нажми «Сохранить».<br/>
+      Например: Python 0.40, FastAPI 0.25, SQL 0.20, Docker 0.15
+    </p>
+    <textarea id="vacancyJson" rows="10">{
+  "title": "Backend Python",
+  "description": "Разработка сервисов на FastAPI. Нужны Python, SQL, Docker.",
+  "weights": { "Python": 0.40, "FastAPI": 0.25, "SQL": 0.20, "Docker": 0.15 }
+}</textarea>
+    <br/><br/>
+    <button id="saveVacancyBtn" type="button">Сохранить вакансию</button>
+    <div id="vacancySaved" class="muted" style="margin-top:8px;"></div>
+  </div>
+</div>
+
+<br/>
+
+<!-- Ряд 2: Резюме -->
+<div class="row">
+  <div class="card">
+    <h2>2) Резюме</h2>
+    <p class="muted">Загрузи PDF/DOC/DOCX/RTF. Покажем распарсенные навыки.</p>
+    <input type="file" id="resumeFile" accept=".pdf,.doc,.docx,.txt,.rtf"/>
+    <br/><br/>
+    <button id="uploadResumeBtn" type="button">Загрузить</button>
+    <div id="resumeInfo" style="margin-top:10px;"></div>
+    <div id="resumeError" class="muted" style="margin-top:6px;color:#b91c1c;"></div>
+  </div>
+</div>
+
+<br/>
+
+<!-- Ряд 2: Предскрининг + Интервью -->
+<div class="row">
+  <div class="card">
+    <h2>3) Предскрининг</h2>
+    <button id="prescreenBtn" type="button">Посчитать соответствие</button>
+    <div id="prescreenBox" style="margin-top:12px;"></div>
+  </div>
+
+  <div class="card">
+    <h2>4) Интервью (речь → текст)</h2>
+    <div style="display:flex; gap:8px;">
+      <button id="startWsBtn" type="button">Старт</button>
+      <button id="stopWsBtn" type="button" class="secondary" disabled>Стоп</button>
+      <button id="clearTrBtn" type="button" class="secondary">Очистить</button>
+    </div>
+    <div id="transcript" style="margin-top:10px;"></div>
+    <div class="muted" style="margin-top:8px;">Совпадения навыков будут добавляться как «evidence» для отчёта.</div>
+    <div id="evidencesBox" style="margin-top:10px;"></div>
+  </div>
+</div>
+
+<br/>
+
+<!-- Итоговый отчёт -->
+<div class="card">
+  <h2>5) Сформировать отчёт</h2>
+  <p class="muted">Отправим vacancy + resume + evidences → получим score и PDF.</p>
+  <button id="reportBtn" type="button">Сформировать</button>
+  <div id="reportBox" style="margin-top:12px;"></div>
+</div>
+
+<script>
+const API = "http://127.0.0.1:8001";
+
+
+let currentVacancy = { title:"", weights:{} };
+let currentResume = { text: "", skills: [] };
+let evidences = []; // {skill, snippet, t0, t1}
+let lastShownNorm = "";
+let lastShownTs   = 0;
+
+
+function pill(t){ return `<span class="pill">${t}</span>`; }
+
+document.addEventListener('DOMContentLoaded', () => {
+  const uploadBtn = document.getElementById('uploadResumeBtn');
+  const fileInput = document.getElementById('resumeFile');
+  const infoBox   = document.getElementById('resumeInfo');
+  const errBox    = document.getElementById('resumeError');
+
+  if (!uploadBtn || !fileInput || !infoBox || !errBox) {
+    console.error('Не найден один из элементов: #uploadResumeBtn, #resumeFile, #resumeInfo, #resumeError');
+    return;
+  }
+
+  uploadBtn.onclick = async () => {
+    errBox.textContent = '';
+    infoBox.innerHTML = '';
+
+    const f = fileInput.files[0];
+    if (!f) { errBox.textContent = 'Выбери файл с резюме'; return; }
+
+    const fd = new FormData();
+    fd.append('file', f, f.name); // бек ждёт поле "file"
+
+    try {
+      const r = await fetch(`${API}/resume`, { method: 'POST', body: fd });
+      if (!r.ok) {
+        const txt = await r.text().catch(()=> '');
+        throw new Error(`/resume ${r.status} ${txt}`);
+      }
+      const js = await r.json();
+      currentResume = js;
+
+      infoBox.innerHTML = `
+        <div><b>Навыки из резюме:</b></div>
+        <div style="margin-top:6px;">${(js.skills||[]).map(pill).join(' ') || '—'}</div>
+      `;
+    } catch (e) {
+      errBox.textContent = 'Ошибка: ' + (e.message || e);
+    }
+  };
+});
+
+function norm(s){
+  return (s||"").toLowerCase()
+    .replace(/[«».,!?;:"'()\-–—]/g," ")
+    .replace(/\s+/g," ")
+    .trim();
+}
+function tooSimilar(a,b,thr=0.92){
+  if(!a||!b) return false;
+  const L = Math.max(a.length,b.length);
+  let same=0;
+  for(let i=0;i<Math.min(a.length,b.length);i++) if(a[i]===b[i]) same++;
+  return (same/L)>=thr;
+}
+
+function pill(t){ return `<span class="pill">${t}</span>`; }
+function safe(s){ return (s||"").replace(/[<>&]/g, ch => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[ch])); }
+
+// 1) Вакансия
+// 1) Вакансия — ОСТАВИТЬ ТОЛЬКО ЭТОТ, второй дубль удалить!
+document.getElementById('saveVacancyBtn').onclick = async () => {
+  const out = document.getElementById('vacancySaved');
+  try {
+    const raw = JSON.parse(document.getElementById('vacancyJson').value);
+
+    let title = "", description = "", weights = {};
+    if (raw && typeof raw === "object" && "weights" in raw) {
+      title = raw.title ?? "";
+      description = raw.description ?? "";
+      weights = raw.weights ?? {};
+    } else {
+      weights = raw ?? {};
+    }
+
+    if (!weights || !Object.keys(weights).length) {
+      out.textContent = "Ошибка: укажи веса навыков (weights)";
+      return;
+    }
+
+    currentVacancy = { title, description, weights };
+    CLIENT_ALIASES = buildClientAliases(currentVacancy?.weights || {});
+
+    const r = await fetch(`${API}/vacancy`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(currentVacancy)
+    });
+
+    if (!r.ok) {
+      const txt = await r.text().catch(()=>"");
+      out.textContent = `Ошибка: /vacancy ${r.status} ${txt}`;
+      return;
+    }
+    out.textContent = "✓ Сохранено";
+  } catch (e) {
+    out.textContent = "Ошибка: " + (e.message || e);
+  }
+};
+
+
+// 2) Резюме — ЭТОТ БЛОК ДОБАВИТЬ
+document.getElementById('uploadResumeBtn').onclick = async () => {
+  const err = document.getElementById('resumeError');
+  err.textContent = "";
+
+  try {
+    const f = document.getElementById('resumeFile').files[0];
+    if (!f) return alert("Выбери файл с резюме");
+
+    const fd = new FormData();
+    fd.append("file", f, f.name);           // бек ждёт поле с именем "file"
+
+    const r = await fetch(`${API}/resume`, { method: "POST", body: fd });
+    if (!r.ok) {
+      const txt = await r.text().catch(()=> "");
+      err.textContent = `Ошибка: /resume ${r.status} ${txt}`;
+      return;
+    }
+
+    const js = await r.json();
+    currentResume = js;
+
+    const box = document.getElementById('resumeInfo');
+    box.innerHTML = `
+      <div><b>Навыки из резюме:</b></div>
+      <div style="margin-top:6px;">${(js.skills||[]).map(pill).join(" ") || "—"}</div>
+    `;
+  } catch (e) {
+    err.textContent = "Ошибка: " + (e.message || e);
+  }
+};
+
+
+// 3) Предскрининг — ДОБАВИТЬ
+document.getElementById('prescreenBtn').onclick = async () => {
+  const box = document.getElementById('prescreenBox');
+  box.innerHTML = "Считаем…";
+  try {
+    const r = await fetch(`${API}/prescreen`);
+    if (!r.ok) {
+      const txt = await r.text().catch(()=> "");
+      box.textContent = `Ошибка: /prescreen ${r.status} ${txt}`;
+      return;
+    }
+    const js = await r.json();
+
+    const rows = (js.table || []).map(row => `
+      <tr>
+        <td>${safe(row.skill)}</td>
+        <td>${row.weight}</td>
+        <td>${(row.in_resume ?? row.have) ? '✓' : '—'}</td>
+        <td>${row.score ?? 0}</td>
+      </tr>
+    `).join("");
+
+    box.innerHTML = `
+      <table>
+        <thead><tr><th>Навык</th><th>Вес</th><th>Есть в резюме?</th><th>Баллы</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div style="margin-top:8px;"><b>Top missing:</b> ${(js.top_missing||[]).map(pill).join(" ") || '—'}</div>
+    `;
+  } catch (e) {
+    box.textContent = "Ошибка: " + (e.message || e);
+  }
+};
+
+
+
+// 4) Интервью (WebSocket)
+let ws, audioCtx, mediaStream, source, processor, inputRate;
+const CHUNK_MS = 320;
+let buf16k = [];
+
+function downsampleTo16k(input, sr) {
+  if (sr === 16000) return input;
+  const ratio = sr / 16000, newLen = Math.round(input.length / ratio);
+  const out = new Float32Array(newLen);
+  for (let i = 0; i < newLen; i++) {
+    const start = Math.floor(i * ratio), end = Math.floor((i + 1) * ratio);
+    let sum = 0, cnt = 0;
+    for (let j = start; j < end && j < input.length; j++) { sum += input[j]; cnt++; }
+    out[i] = cnt ? sum / cnt : input[start];
+  }
+  return out;
+}
+function floatTo16PCM(arr) {
+  const out = new Int16Array(arr.length);
+  for (let i=0;i<arr.length;i++){ let s=Math.max(-1,Math.min(1,arr[i])); out[i]=(s<0?s*0x8000:s*0x7fff)|0; }
+  return out.buffer;
+}
+// каноническое имя навыка -> список фраз/регексов, по которым ловим
+const ALIASES = {
+  Python:   [/\bpython\b/i, /\bпитон\b/i, /\bпайтон\b/i],
+  FastAPI:  [/\bfast\s*api\b/i, /\bфаст\s*апи\b/i, /\bфаста?\s*пи\b/i],
+  SQL:      [/\bsql\b/i, /\bэс\s*кью\s*эл\b/i, /\bскв?е?л\b/i, /\bскьюэл\b/i],
+  Docker:   [/\bdocker\b/i, /\bдокер\b/i],
+  Kubernetes: [/\bkubernetes\b/i, /\bk8s\b/i, /\bкубер(?:нетес)?\b/i],
+  Git:      [/\bgit\b/i, /\bгит\b/i],
+};
+
+function buildClientAliases(weights) {
+  const rx = (r) => r;
+  const KNOWN = {
+    // Бизнес-аналитик
+    "Анализ требований": [rx(/анализ\w*\s+требован/i), rx(/requirements?/i), rx(/user\s*story/i), rx(/use\s*case/i)],
+    "Антифрод-системы":  [rx(/антифрод/i), rx(/anti[-\s]?fraud/i), rx(/\baml\b/i), rx(/мошеннич/i), rx(/\bfraud\b/i)],
+    "SQL/СУБД":          [rx(/\bsql\b/i), rx(/субд/i), rx(/баз[ыа]\s+данн/i), rx(/postgres/i), rx(/\bmysql\b/i), rx(/\boracle\b/i)],
+    "Документация (ТЗ, ФТ)": [rx(/\bтз\b/i), rx(/\bф[тд]\b/i), rx(/тех\w*\s+задан/i), rx(/функциональн\w*\s+требован/i), rx(/документац/i)],
+    "Финансовые операции/карт-бизнес": [rx(/финанс/i), rx(/карт/i), rx(/плате?ж/i), rx(/эквайр/i), rx(/транзакц/i), rx(/\bдбо\b/i)],
+    "MS Office":         [rx(/ms\s*office/i), rx(/\bexcel\b/i), rx(/\bword\b/i), rx(/powerpoint/i), rx(/\bvisio\b/i)],
+
+    // Ведущий специалист (ИТ, ЦОД)
+    "Серверное оборудование x86": [rx(/серверн\w+\s+оборудован/i), rx(/\bx86\b/i), rx(/\bbios\b/i), rx(/\bbmc\b/i), rx(/\braid\b/i)],
+    "Сети LAN/SAN":      [rx(/\blan\b/i), rx(/\bsan\b/i), rx(/ethernet/i), rx(/\bfc\b/i), rx(/storage/i), rx(/локальн\w*\s+сеть/i)],
+    "Кабельные системы": [rx(/\bскс\b/i), rx(/кабельн\w+\s+систем/i), rx(/оптич/i), rx(/витая\s*пара/i)],
+    "Диагностика оборудования": [rx(/диагностик/i), rx(/troubleshoot/i), rx(/инцидент/i), rx(/авар/i)],
+    "Документооборот (CMDB, DCIM)": [rx(/\bcmdb\b/i), rx(/\bdcim\b/i), rx(/документооборот/i)],
+    "MS Office (Excel, Word, Visio)": [rx(/\bexcel\b/i), rx(/\bword\b/i), rx(/\bvisio\b/i), rx(/ms\s*office/i)],
+    "Ответственность/внимательность": [rx(/ответствен/i), rx(/вниматель/i), rx(/аккуратн/i), rx(/исполнител/i)],
+
+    // dev-навыки (пусть остаются)
+    "Python": [rx(/\bpython\b/i), rx(/\bпитон\b/i), rx(/\bпайтон\b/i)],
+    "FastAPI": [rx(/\bfast\s*api\b/i), rx(/\bфаст\s*апи\b/i), rx(/\bфаста?\s*пи\b/i)],
+    "Docker": [rx(/\bdocker\b/i), rx(/\bдокер\b/i)],
+    "Kubernetes": [rx(/\bkubernetes\b/i), rx(/\bk8s\b/i), rx(/кубер(?:нетес)?/i)],
+    "Git": [rx(/\bgit\b/i), rx(/\bгит\b/i)],
+    "Jira": [rx(/\bjira\b/i), rx(/\bжира\b/i)],
+    "Confluence": [rx(/\bconfluence\b/i), rx(/\bконфлюенс\b/i)],
+    "Swagger": [rx(/\bswagger\b/i), rx(/\bopenapi\b/i)],
+    "Excel": [rx(/\bexcel\b/i), rx(/\bms\s*excel\b/i), rx(/экс[еэ]ль?/i)],
+    "ML": [rx(/machine\s*learning/i), rx(/\bml\b/i), rx(/машин\w*\s+обуч\w*/i)],
+  };
+
+  const out = {};
+  for (const key of Object.keys(weights || {})) {
+    // если ключ известен — берём умные алиасы, иначе — fallback «по слову»
+    out[key] = KNOWN[key] || [new RegExp(`\\b${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i')];
+  }
+  return out;
+}
+
+// текущее множество алиасов на фронте (зависит от выбранной вакансии)
+let CLIENT_ALIASES = {};
+
+
+
+function addLineToTranscript(text) {
+  const box = document.getElementById('transcript');
+  const p = document.createElement('p');
+  const now = performance.now()/1000;
+  const nn  = norm(text);
+  if (tooSimilar(nn, lastShownNorm, 0.92) && (now - lastShownTs) < 0.7) return;
+  lastShownNorm = nn;
+  lastShownTs   = now;
+  p.textContent = text;
+  box.appendChild(p);
+  box.scrollTop = box.scrollHeight;
+
+  const weights = currentVacancy?.weights || {};
+  const hits = [];
+  for (const canon of Object.keys(weights)) {
+    const pats = CLIENT_ALIASES[canon] || [new RegExp(`\\b${canon.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}\\b`, 'i')];
+    if (pats.some(rx => rx.test(text))) {
+      hits.push(canon);
+      evidences.push({ skill: canon, snippet: text, t0: null, t1: null, confidence: 1.0 });
+    }
+  }
+
+  if (hits.length) {
+    const ebox = document.getElementById('evidencesBox');
+    const row = document.createElement('div');
+    const esc = (s)=>s.replace(/[<>&]/g, m=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[m]));
+    row.innerHTML = `<div><b>Найдено:</b> ${hits.map(h=>`<span class="pill">${h}</span>`).join(" ")} <span class="muted">из фразы:</span> ${esc(text)}</div>`;
+    ebox.appendChild(row);
+  }
+}
+
+let ws, audioCtx, mediaStream, source, processor, inputRate;
+let sendTimer = null;   // таймер отправки чанков
+let wsOpen = false;     // защита от повторного запуска
+
+document.getElementById('startWsBtn').onclick = async () => {
+  try {
+    if (wsOpen) return; // если уже запущено — выходим
+
+    ws = new WebSocket("ws://127.0.0.1:8001/audio");
+    ws.onopen = () => {
+      wsOpen = true;
+      ws.send(JSON.stringify({ event: "start", sample_rate: 16000, lang: "ru" }));
+    };
+
+    ws.onmessage = (ev) => {
+      try {
+        const obj = JSON.parse(ev.data);
+        if (obj.event === "final" && obj.text) {
+          addLineToTranscript(obj.text);
+        }
+      } catch {}
+    };
+
+    ws.onclose = () => {
+      wsOpen = false;
+      if (sendTimer) {
+        clearInterval(sendTimer);
+        sendTimer = null;
+      }
+      document.getElementById('startWsBtn').disabled = false;
+      document.getElementById('stopWsBtn').disabled = true;
+    };
+
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 1,
+        sampleRate: 16000
+      }
+    });
+
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    source = audioCtx.createMediaStreamSource(mediaStream);
+    processor = audioCtx.createScriptProcessor(2048, 1, 1);
+    inputRate = audioCtx.sampleRate;
+
+    processor.onaudioprocess = (e) => {
+      const ch0 = e.inputBuffer.getChannelData(0);
+      buf16k.push(downsampleTo16k(ch0, inputRate));
+    };
+
+    source.connect(processor);
+    const silent = audioCtx.createGain();
+    silent.gain.value = 0;
+    processor.connect(silent);
+    silent.connect(audioCtx.destination);
+
+    // запускаем отправку чанков каждые CHUNK_MS
+    sendTimer = setInterval(() => {
+      if (!buf16k.length || ws.readyState !== 1) return;
+      const totalLen = buf16k.reduce((s, a) => s + a.length, 0);
+      const joined = new Float32Array(totalLen);
+      let off = 0;
+      for (const a of buf16k) {
+        joined.set(a, off);
+        off += a.length;
+      }
+      buf16k = [];
+      const pcm16 = floatTo16PCM(joined);
+      ws.send(pcm16);
+    }, CHUNK_MS);
+
+    document.getElementById('startWsBtn').disabled = true;
+    document.getElementById('stopWsBtn').disabled = false;
+  } catch (e) {
+    alert("Не удалось открыть микрофон: " + e.message);
+  }
+};
+
+
+document.getElementById('stopWsBtn').onclick = async () => {
+  try {
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ event: "stop" }));
+    }
+
+    // стопим таймер отправки аудио
+    if (sendTimer) {
+      clearInterval(sendTimer);
+      sendTimer = null;
+    }
+
+    // рвём аудио-потоки
+    if (processor) processor.disconnect();
+    if (source) source.disconnect();
+    if (audioCtx) await audioCtx.close();
+    if (mediaStream) mediaStream.getTracks().forEach(t => t.stop());
+
+    // закрываем WS
+    if (ws) ws.close();
+  } catch (e) {
+    console.error("Ошибка при остановке WS:", e);
+  } finally {
+    wsOpen = false;
+    document.getElementById('startWsBtn').disabled = false;
+    document.getElementById('stopWsBtn').disabled = true;
+  }
+};
+
+document.getElementById('clearTrBtn').onclick = () => {
+  // очищаем вывод текста и найденные совпадения
+  document.getElementById('transcript').innerHTML = '';
+  document.getElementById('evidencesBox').innerHTML = '';
+  evidences = [];
+
+  // сбрасываем анти-дубли
+  lastShownNorm = "";
+  lastShownTs = 0;
+};
+
+
+// 5) Отчёт — ОСТАВИТЬ ТОЛЬКО ЭТОТ, нижний удалить
+document.getElementById('reportBtn').onclick = async () => {
+  try {
+    if (!currentVacancy || !currentVacancy.weights) {
+      return alert("Сначала сохраните вакансию");
+    }
+    if (!currentResume || !currentResume.skills) {
+      return alert("Сначала загрузите резюме");
+    }
+
+    const payload = {
+      vacancy: {
+        title: currentVacancy.title || "",
+        description: currentVacancy.description || "",
+        weights: currentVacancy.weights || {}
+      },
+      resume: {
+        text: currentResume.text || "",
+        skills: currentResume.skills || []
+      },
+      evidences: (evidences || []).map(e => ({
+        skill: e.skill,
+        quote: e.snippet || e.text || e.quote || "",
+        t: e.t0 ?? e.t ?? 0
+      }))
+    };
+
+    const r = await fetch(`${API}/report`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    if (!r.ok) {
+      const txt = await r.text().catch(()=> "");
+      throw new Error(`/report ${r.status}: ${txt}`);
+    }
+
+    const js = await r.json();
+    const box = document.getElementById('reportBox');
+    box.innerHTML = `
+      <div><b>Score:</b> ${Number(js.score ?? 0)}%</div>
+      <div style="margin:6px 0;"><b>Flags:</b> ${(js.flags || []).join(', ') || '—'}</div>
+      <div><a href="${js.url_pdf}" target="_blank">Открыть PDF отчёт</a></div>
+    `;
+  } catch (e) {
+    alert("Ошибка формирования отчёта: " + (e.message || e));
+  }
+};
+
+</script>
