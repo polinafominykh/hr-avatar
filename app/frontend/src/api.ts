@@ -9,7 +9,15 @@ export async function postResume(file: File) {
   const fd = new FormData(); fd.append("file", file);
   return (await API.post("/resume", fd)).data;
 }
-export async function getPrescreen() { return (await API.get("/prescreen")).data; }
+export async function getPrescreen() {
+  const res = await API.get("/prescreen");
+  const data = res.data || {};
+  return {
+    table: Array.isArray(data.table) ? data.table : [],
+    top_missing: Array.isArray(data.top_missing) ? data.top_missing : [],
+  };
+}
+
 export function wsAudio(candidateId: string) {
   const base = import.meta.env.VITE_WS_URL || "ws://127.0.0.1:8000";
   return new WebSocket(`${base}/audio?candidate_id=${candidateId}`);
