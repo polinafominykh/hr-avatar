@@ -4,34 +4,59 @@ import numpy as np
 import torch
 from faster_whisper import WhisperModel
 
-# грузим VAD из репозитория (вес подтянется автоматически)
+# --- Silero VAD (для стримера) ---
 model_vad, utils = torch.hub.load(
-    repo_or_dir='snakers4/silero-vad', model='silero_vad', trust_repo=True
+    repo_or_dir="snakers4/silero-vad", model="silero_vad", trust_repo=True
 )
 (get_speech_timestamps, save_audio, read_audio, VADIterator, collect_chunks) = utils
 
-# ASR-модель (CPU; для шустроты можно "base"/"tiny")
-whisper = WhisperModel("medium", device="cpu", compute_type="int8")
-
 SR = 16000  # работаем в 16 кГц, mono, PCM16
+
 
 def pcm16_to_float32(pcm16: bytes) -> np.ndarray:
     a = np.frombuffer(pcm16, dtype=np.int16)
     return a.astype(np.float32) / 32768.0
 
-def transcribe_segment(pcm16: bytes, lang: str | None = "ru") -> str:
-    audio = pcm16_to_float32(pcm16)
-    segments, _ = whisper.transcribe(
+
+# --- ASR модель (CPU). Для стабильности лучше "base" ---
+whisper = WhisperModel("small", device="cpu", compute_type="int8")
+
+
+def transcribe_segment(pcm: bytes, lang: Optional[str] = "ru", bias_terms: Optional[list[str]] = None) -> str:
+    if not pcm:
+        return ""
+
+    audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+
+    init_prompt = None
+    # временно отключаем bias для борьбы с заеданием
+    if bias_terms:
+        # при желании включишь обратно, но держи список коротким
+        pass
+
+    segments, info = whisper.transcribe(
         audio,
-        language=lang,
+        language=lang or "ru",
+        vad_filter=False,
+        without_timestamps=True,
+        beam_size=1, best_of=1, temperature=0.0,
+        compression_ratio_threshold=2.8,
+        log_prob_threshold=-0.35,
+        no_speech_threshold=0.8,
+        condition_on_previous_text=False,
         task="transcribe",
-        beam_size=5,                      # получше, чем greedy
-        temperature=[0.0, 0.2, 0.4],      # попытки
-        vad_filter=False,                 # VAD уже делаем сами
-        condition_on_previous_text=False, # без «прилипаний» старого текста
-        initial_prompt="Это русская речь.",  # прайминг на русский
     )
-    return " ".join(s.text.strip() for s in segments if s.text.strip())
+
+    parts = []
+    for seg in segments:
+        if seg.text:
+            t = seg.text.strip()
+            parts.append(t)
+    out = " ".join(parts).strip()
+    return out
+
+
+
 
 class SileroStreamer:
     """
@@ -54,9 +79,7 @@ class SileroStreamer:
 
         # ограничиваем буфер «задним окном» для скорости VAD
         if len(self.buf) > self.lookback_samples:
-            # подрезаем слева, но не меньше уже отданных
             extra = len(self.buf) - self.lookback_samples
-            # сдвигаем маркер конца
             self.last_end_sample = max(0, self.last_end_sample - extra)
             del self.buf[:extra]
 
@@ -71,8 +94,8 @@ class SileroStreamer:
         ts = get_speech_timestamps(wav_t, model_vad, sampling_rate=self.sr)
         out = []
         for seg in ts:
-            start_b = seg['start'] * 2
-            end_b   = seg['end']   * 2
+            start_b = seg["start"] * 2
+            end_b = seg["end"] * 2
             # отдаём только новые хвосты, которые мы ещё не эмитили
             if end_b > self.last_end_sample:
                 chunk = self.buf[start_b:end_b]

@@ -8,18 +8,21 @@ class VacancyIn(BaseModel):
 
 class ResumeOut(BaseModel):
     text: str
-    skills: List[str] = []
+    skills: List[str] = Field(default_factory=list)           # ← фикс мутируемого дефолта
     contact: Optional[Dict[str, str]] = None
 
+# одна строка таблицы предскрининга
 class PrescreenItem(BaseModel):
     skill: str
-    in_resume: bool
     weight: float
+    have: bool                         # ← добавили (для фронта)
+    in_resume: bool                    # ← оставили для совместимости
+    score: float                       # ← добавили (чтобы не было undefined)
     note: Optional[str] = None
 
 class PrescreenOut(BaseModel):
     table: List[PrescreenItem]
-    top_missing: List[str] = []
+    top_missing: List[str] = Field(default_factory=list)       # ← фикс дефолта
 
 class Evidence(BaseModel):
     skill: str
@@ -29,7 +32,7 @@ class Evidence(BaseModel):
 class ReportIn(BaseModel):
     vacancy: VacancyIn
     resume: ResumeOut
-    evidences: List[Evidence] = []
+    evidences: List[Evidence] = Field(default_factory=list)    # ← фикс дефолта
 
 class ReportOut(BaseModel):
     score: float

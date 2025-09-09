@@ -51,29 +51,57 @@ def _extract_plain(file_bytes: bytes) -> str:
             continue
     return ""
 
-# --- Извлечение скиллов (очень простой детектор по ключевым словам) ---
+
+# --- Извлечение скиллов (детектор по ключевым словам) ---
 _CANON_SKILLS = {
-    "python": [r"\bpython\b"],
-    "fastapi": [r"\bfastapi\b"],
-    "ml": [r"\bmachine learning\b", r"\bml\b"],
-    "nlp": [r"\bnlp\b", r"\bnatural language processing\b"],
-    "pytorch": [r"\bpytorch\b"],
-    "tensorflow": [r"\btensorflow\b"],
-    "docker": [r"\bdocker\b"],
-    "kubernetes": [r"\bk8s\b", r"\bkubernetes\b"],
-    "sql": [r"\bsql\b", r"\bpostgres\b", r"\bmysql\b"],
-    "git": [r"\bgit\b"],
-    "react": [r"\breact\b"],
-    "vite": [r"\bvite\b"],
-    "tailwind": [r"\btailwind\b"],
-    "websocket": [r"\bweb\s*socket(s)?\b", r"\bwebsocket(s)?\b"],
-    "whisper": [r"\bwhisper\b"],
-    "vad": [r"\bvad\b", r"\bvoice activity detection\b"],
-    "jinja": [r"\bjinja\b"],
-    "weasyprint": [r"\bweasyprint\b"],
-    "reportlab": [r"\breportlab\b"],
-    "pydantic": [r"\bpydantic\b"],
+    # ===== Вакансия: Бизнес-аналитик =====
+    "Анализ требований": [
+        r"\bанализ\w*\s+требован", r"\bтребован\w+\s*(?:бизн|функц)",
+        r"\brequirements?\b", r"\buser\s*story\b", r"\buse\s*case\b"
+    ],
+    "Антифрод-системы": [
+        r"\bантифрод\b", r"\banti[-\s]?fraud\b",
+        r"\bпод/?фт\b", r"\baml\b", r"\bfraud\b", r"\bмошеннич\w+"
+    ],
+    "SQL/СУБД": [
+        r"\bsql\b", r"\bpostgres(?:ql)?\b", r"\bmysql\b", r"\boracle\b", r"\bсубд\b"
+    ],
+    "Документация (ТЗ, ФТ)": [
+        r"\bтз\b", r"\bф[тд]\b", r"\bтех\w*\s+задани", r"\bфункциональн\w*\s+требован"
+    ],
+    "Финансовые операции/карт-бизнес": [
+        r"\bкарт\w+\b", r"\bплатеж\w+\b", r"\bэквайр\w+\b", r"\bплатёжн\w+\s+систем",
+        r"\bдбо\b", r"\bкорпоративн\w*\s+карт", r"\bтранзакц\w+"
+    ],
+    "MS Office": [
+        r"\bms\s*office\b", r"\bexcel\b", r"\bword\b", r"\bpowerpoint\b", r"\bvisio\b"
+    ],
+
+    # ===== Вакансия: Ведущий специалист (ИТ, ЦОД) =====
+    "Серверное оборудование x86": [
+        r"\bсерверн\w+\s+оборудован\w+\b", r"\bx86\b", r"\bbios\b", r"\bbmc\b", r"\braid\b"
+    ],
+    "Сети LAN/SAN": [
+        r"\blan\b", r"\bsan\b", r"\bethernet\b", r"\bсет(и|ях)\b", r"\bfc\b", r"\bstorage\b"
+    ],
+    "Кабельные системы": [
+        r"\bскс\b", r"\bкабельн\w+\s+систем", r"\bоптич\w+\b", r"\bвитая\s*пара\b"
+    ],
+    "Диагностика оборудования": [
+        r"\bдиагностик\w+\b", r"\btroubleshoot\w*\b", r"\bинцидент\w+\b", r"\bavar[iй]\b"
+    ],
+    "Документооборот (CMDB, DCIM)": [
+        r"\bcmdb\b", r"\bdcim\b", r"\bсистем\w+\s+уч[её]та\b", r"\bдокументооборот\b"
+    ],
+    "MS Office (Excel, Word, Visio)": [
+        r"\bexcel\b", r"\bword\b", r"\bvisio\b", r"\bms\s*office\b"
+    ],
+    "Ответственность/внимательность": [
+        r"\bответственн\w+\b", r"\bвнимательн\w+\b", r"\bаккуратн\w+\b", r"\bисполнительн\w+\b"
+    ],
 }
+
+
 
 def _extract_skills(text: str) -> list[str]:
     found = []
