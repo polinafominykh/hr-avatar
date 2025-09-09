@@ -1,70 +1,95 @@
 import React, { useEffect, useState } from "react";
 import FileDrop from "../components/FileDrop";
 import { postResume, getPrescreen } from "../api";
-import { useStore } from "../store";
-import ProgressBar from "../components/ProgressBar";
 import ScanProgress from "../components/ScanProgress";
 
+type Row = {
+  skill: string;
+  weight: number;
+  have: boolean;
+  in_resume: boolean;
+  score: number;
+  note?: string | null;
+};
+
 export default function Resumes() {
-  const { setTab } = useStore();
-  const [list,setList] = useState<any[]>([]);
+  const [rows, setRows] = useState<Row[]>([]);
+  const [missing, setMissing] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
 
+  const load = async () => {
+    const data = await getPrescreen();
+    setRows(data.table || []);
+    setMissing(data.top_missing || []);
+  };
 
-  const load = async()=> setList(await getPrescreen());
-  useEffect(()=>{ load(); },[]);
+  useEffect(() => { load(); }, []);
 
   return (
     <div className="space-y-6">
-          <FileDrop
-      accept=".pdf,.docx,.rtf"
-      onFile={async (f) => {
-        setLoading(true);
-        try {
-          await postResume(f);
-          await load();
-        } finally {
-          setLoading(false);
-        }
-      }}
-    />
-    <ScanProgress show={loading} />
+      <FileDrop
+        accept=".pdf,.doc,.docx,.rtf"
+        onFile={async (f) => {
+          setLoading(true);
+          try {
+            await postResume(f);
+            await load();
+          } finally {
+            setLoading(false);
+          }
+        }}
+      />
+
+      <ScanProgress show={loading} />
 
       <div>
         <div className="font-medium mb-2">Прескрининг</div>
-        <table className="w-full text-sm overflow-hidden rounded-[var(--radius)] border border-[var(--card-border)]">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="p-2 text-left">Кандидат</th>
-              <th className="p-2">Оценка</th>
-              <th className="p-2">Действие</th>
-            </tr>
-          </thead>
-          <tbody>
-            {list.map((r:any)=>(
-              <tr key={r.id} className="border-t">
-                <td className="p-2">{r.name}</td>
-                <td className="p-2">
-                  <div className="flex items-center gap-3">
-                    <div className="w-12 text-right">{Math.round((r.prescore || 0) * 100)}%</div>
-                    <div className="flex-1">
-                      <ProgressBar value={Math.round((r.prescore || 0) * 100)} />
-                    </div>
-                  </div>
-                </td>
-                <td className="p-2 text-center">
-                  <button
-                  className="w-full px-4 py-2 bg-[#0044BB] hover:bg-[#003399] text-white font-medium rounded-lg shadow-md transition"
-                  onClick={()=>{ useStore.setState({ currentCandidateId:r.id }); setTab("int"); }}>
-                  Интервью
-                </button>
 
-                </td>
+        {rows.length === 0 && !loading ? (
+          <div className="p-3 text-gray-600 rounded-lg border border-[var(--card-border)] bg-white">
+            Пока пусто — загрузите резюме
+          </div>
+        ) : (
+          <table className="w-full text-sm overflow-hidden rounded-[var(--radius)] border border-[var(--card-border)] bg-white">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="p-2 text-left">Навык</th>
+                <th className="p-2 text-center">Вес</th>
+                <th className="p-2 text-center">В резюме</th>
+                <th className="p-2 text-center">Баллы</th>
               </tr>
-            ))}
-            {list.length===0 && <tr><td className="p-3" colSpan={3}>Пока пусто — загрузите резюме</td></tr>}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.skill} className="border-t">
+                  <td className="p-2">{r.skill}</td>
+                  <td className="p-2 text-center">{r.weight}</td>
+                  <td className="p-2 text-center">
+                    {r.in_resume || r.have ? (
+                      <span className="px-2 py-0.5 rounded bg-green-50 text-green-700">Да</span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded bg-red-50 text-red-700">Нет</span>
+                    )}
+                  </td>
+                  <td className="p-2 text-center">{r.score}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+
+        {missing.length > 0 && (
+          <div className="mt-4">
+            <div className="text-sm text-gray-500 mb-1">Стоит уточнить/добрать:</div>
+            <div className="flex flex-wrap gap-2">
+              {missing.map((s) => (
+                <span key={s} className="px-2 py-1 rounded bg-blue-50 text-blue-700 text-xs">
+                  {s}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
